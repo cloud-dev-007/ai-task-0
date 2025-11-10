@@ -194,11 +194,4 @@ if __name__ == "__main__":
     print("Starting Gemini AI Chat Moderator...")
     print(f"API Key: {moderator.api_key[:10]}...")
     
-    # Run in CLI mode or Web API mode based on argument
-    # import sys
-    # if len(sys.argv) > 1 and sys.argv[1] == 'web':
-    #     print("Starting web server on http://localhost:5000")
-    #     app.run(debug=True, host='0.0.0.0', port=5000)
-    # else:
-    #     # Run command line interface
 main()
