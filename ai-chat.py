@@ -1,158 +1,204 @@
-import os
 import requests
 import json
-import re
-from typing import Tuple, Optional
+import os
+from typing import Tuple, List
 
-API_KEY = os.environ.get('GOOGLE_API_KEY', 'YOUR_API_KEY_HERE')
-API_ENDPOINT = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={API_KEY}'
-
-# System prompt to guide AI behavior
-SYSTEM_PROMPT = """
-You are a helpful, respectful, and honest assistant. 
-Always answer as helpfully as possible while being safe. 
-Your answers should not include any harmful, unethical, racist, sexist, 
-toxic, dangerous, or illegal content. Please ensure that your responses 
-are socially unbiased and positive in nature.
-"""
-
-# Moderation keywords
-BANNED_KEYWORDS = [
-    'kill', 'murder', 'hack', 'bomb', 'terrorist', 'suicide',
-    'weapon', 'drugs', 'violence', 'attack', 'destroy', 'harm'
-]
-
-
-def check_moderation(text: str) -> Tuple[bool, list]:
-    text_lower = text.lower()
-    found_keywords = []
-    
-    for keyword in BANNED_KEYWORDS:
-        # Use word boundaries to avoid false positives
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        if re.search(pattern, text_lower):
-            found_keywords.append(keyword)
-    
-    is_safe = len(found_keywords) == 0
-    return is_safe, found_keywords
-
-
-def moderate_output(text: str) -> str:
-    moderated_text = text
-    
-    for keyword in BANNED_KEYWORDS:
-        # Case-insensitive replacement with word boundaries
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        moderated_text = re.sub(
-            pattern, 
-            '[REDACTED]', 
-            moderated_text, 
-            flags=re.IGNORECASE
-        )
-    
-    return moderated_text
-
-
-def call_gemini_api(user_prompt: str) -> Optional[str]:
-    # Combine system prompt with user prompt
-    full_prompt = f"{SYSTEM_PROMPT}\n\nUser: {user_prompt}"
-    
-    # Prepare request payload
-    payload = {
-        "contents": [{
-            "parts": [{
-                "text": full_prompt
-            }]
-        }],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 1024,
-        }
-    }
-    
-    headers = {
-        'Content-Type': 'application/json'
-    }
-    
-    try:
-        # Make API request
-        response = requests.post(
-            API_ENDPOINT,
-            headers=headers,
-            data=json.dumps(payload),
-            timeout=30
-        )
+class GeminiChatModerator:
+    def __init__(self, api_key: str = None):
+        self.api_key = api_key or os.getenv('GEMINI_API_KEY', 'AIzaSyAiIWXFxKn7Iogvu5giZRTcZDeh36tx6WI')
+        self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
-        response.raise_for_status()
+        # System prompt that defines AI's behavior
+        self.system_prompt = """You are a helpful, respectful, and honest assistant. 
+Always provide accurate and harmless information. If you're unsure about something, 
+say so rather than making up information. Be concise and helpful in your responses."""
         
-        # Parse response
-        result = response.json()
-        
-        if 'candidates' in result and len(result['candidates']) > 0:
-            ai_response = result['candidates'][0]['content']['parts'][0]['text']
-            return ai_response
-        else:
-            print("Error: Unexpected API response format")
-            return None
+        # Banned keywords for moderation
+        self.banned_keywords = ["kill", "hack", "bomb", "harm", "violence", "dangerous", "explosive"]
+    
+    def moderate_input(self, user_prompt: str) -> Tuple[bool, str]:
+        if not user_prompt or not user_prompt.strip():
+            return False, "Input cannot be empty"
             
-    except requests.exceptions.RequestException as e:
-        print(f"API Request Error: {e}")
-        return None
-    except (KeyError, IndexError, json.JSONDecodeError) as e:
-        print(f"Response Parsing Error: {e}")
-        return None
+        user_prompt_lower = user_prompt.lower()
+        
+        for keyword in self.banned_keywords:
+            if keyword in user_prompt_lower:
+                return False, f"Input contains banned keyword: '{keyword}'"
+        
+        return True, "Input passed moderation"
+    
+    def moderate_output(self, ai_response: str) -> Tuple[str, bool]:
+        if not ai_response:
+            return "", False
+            
+        had_violations = False
+        moderated_response = ai_response
+        
+        for keyword in self.banned_keywords:
+            if keyword in ai_response.lower():
+                had_violations = True
+                # Replace all occurrences (case insensitive)
+                moderated_response = self._replace_case_insensitive(
+                    moderated_response, keyword, '[REDACTED]'
+                )
+        
+        return moderated_response, had_violations
+    
+    def _replace_case_insensitive(self, text: str, old: str, new: str) -> str:
+        import re
+        return re.compile(re.escape(old), re.IGNORECASE).sub(new, text)
+    
+    def call_gemini_api(self, user_prompt: str) -> Tuple[str, bool]:
+        headers = {
+            "Content-Type": "application/json",
+            "X-goog-api-key": self.api_key
+        }
+        
+        # Combine system prompt with user prompt for Gemini
+        full_prompt = f"{self.system_prompt}\n\nUser: {user_prompt}\nAssistant:"
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": full_prompt
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 500,
+            }
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.api_url}?key={self.api_key}", 
+                headers=headers, 
+                json=payload, 
+                timeout=30
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Extract the response text from Gemini's response format
+            if 'candidates' in result and len(result['candidates']) > 0:
+                ai_response = result['candidates'][0]['content']['parts'][0]['text']
+                return ai_response.strip(), True
+            else:
+                return "Error: No response generated by AI", False
+            
+        except requests.exceptions.RequestException as e:
+            return f"API Error: {str(e)}", False
+        except KeyError as e:
+            return f"Unexpected API response format: {str(e)}", False
+        except Exception as e:
+            return f"Unexpected error: {str(e)}", False
+    
+    def process_user_prompt(self, user_prompt: str) -> str:
+        # Step 1: Input moderation
+        is_safe, message = self.moderate_input(user_prompt)
+        if not is_safe:
+            return "Your input/output violated the moderation policy."
+        
+        # Step 2: Call Gemini API
+        ai_response, success = self.call_gemini_api(user_prompt)
+        if not success:
+            return f"Error: {ai_response}"
+        
+        # Step 3: Output moderation
+        moderated_response, had_violations = self.moderate_output(ai_response)
+        
+        # Step 4: Return final response
+        if had_violations:
+            return "Your input/output violated the moderation policy."
+        
+        return moderated_response
 
 
 def main():
-    print("=" * 60)
-    print("AI Chat Application with Moderation")
-    print("=" * 60)
-    print("\nType 'quit' to exit the application.\n")
+    # Initialize the moderator with your API key
+    moderator = GeminiChatModerator(api_key="AIzaSyAiIWXFxKn7Iogvu5giZRTcZDeh36tx6WI")
     
-    # Check if API key is set
-    if API_KEY == 'YOUR_API_KEY_HERE':
-        print("⚠️  WARNING: Please set your GOOGLE_API_KEY environment variable")
-        print("or replace 'YOUR_API_KEY_HERE' in the script with your actual API key.\n")
+    print("🤖 Gemini AI Chat Moderator")
+    print("===========================")
+    print("Type 'quit' or 'exit' to end the session")
+    print("-" * 40)
     
     while True:
-        # Get user input
-        user_prompt = input("\n👤 You: ").strip()
-        
-        if user_prompt.lower() == 'quit':
-            print("\n👋 Goodbye!")
+        try:
+            # Get user input
+            user_prompt = input("\nYou: ").strip()
+            
+            if user_prompt.lower() in ['quit', 'exit', 'bye']:
+                print("Goodbye! 👋")
+                break
+            
+            if not user_prompt:
+                print("Please enter a message.")
+                continue
+            
+            # Process the prompt
+            print("Processing...")
+            response = moderator.process_user_prompt(user_prompt)
+            print(f"AI: {response}")
+            
+        except KeyboardInterrupt:
+            print("\n\nSession ended by user. Goodbye! 👋")
             break
+        except Exception as e:
+            print(f"An error occurred: {str(e)}")
+
+
+# Web API version using Flask
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+moderator = GeminiChatModerator(api_key="AIzaSyAiIWXFxKn7Iogvu5giZRTcZDeh36tx6WI")
+
+@app.route('/api/chat', methods=['POST'])
+def chat_endpoint():
+    try:
+        data = request.get_json()
         
-        if not user_prompt:
-            print("⚠️  Please enter a valid prompt.")
-            continue
+        if not data or 'prompt' not in data:
+            return jsonify({'error': 'Missing prompt field'}), 400
         
-        # Input moderation check
-        is_input_safe, found_input_keywords = check_moderation(user_prompt)
+        user_prompt = data['prompt']
         
-        if not is_input_safe:
-            print(f"\n❌ Your input violated the moderation policy.")
-            print(f"   Found banned keywords: {', '.join(found_input_keywords)}")
-            continue
+        if not isinstance(user_prompt, str) or not user_prompt.strip():
+            return jsonify({'error': 'Prompt must be a non-empty string'}), 400
         
-        # Call AI API
-        print("\n🤖 AI is thinking...")
-        ai_response = call_gemini_api(user_prompt)
+        response = moderator.process_user_prompt(user_prompt)
         
-        if ai_response is None:
-            print("\n❌ Failed to get response from AI. Please try again.")
-            continue
+        return jsonify({
+            'user_prompt': user_prompt,
+            'ai_response': response,
+            'status': 'success'
+        })
         
-        # Output moderation check
-        is_output_safe, found_output_keywords = check_moderation(ai_response)
-        
-        if not is_output_safe:
-            print(f"\n⚠️  AI output contained banned keywords: {', '.join(found_output_keywords)}")
-            print("   Moderating response...\n")
-            ai_response = moderate_output(ai_response)
-        
-        # Display response
-        print(f"\n🤖 AI: {ai_response}")
+    except Exception as e:
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({'status': 'healthy', 'service': 'Gemini AI Chat Moderator'})
 
 
 if __name__ == "__main__":
-    main()
+    print("Starting Gemini AI Chat Moderator...")
+    print(f"API Key: {moderator.api_key[:10]}...")
+    
+    # Run in CLI mode or Web API mode based on argument
+    # import sys
+    # if len(sys.argv) > 1 and sys.argv[1] == 'web':
+    #     print("Starting web server on http://localhost:5000")
+    #     app.run(debug=True, host='0.0.0.0', port=5000)
+    # else:
+    #     # Run command line interface
+main()
