@@ -5,7 +5,7 @@ from typing import Tuple, List
 
 class GeminiChatModerator:
     def __init__(self, api_key: str = None):
-        self.api_key = api_key or os.getenv('GEMINI_API_KEY', 'AIzaSyAiIWXFxKn7Iogvu5giZRTcZDeh36tx6WI')
+        self.api_key = api_key or os.getenv('GEMINI_API_KEY', 'xxxxxxxxx')
         self.api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
         # System prompt that defines AI's behavior
